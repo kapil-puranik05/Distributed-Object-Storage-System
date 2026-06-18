@@ -1,0 +1,5 @@
+{
+    "host":"localhost",
+    "port":8080,
+    "topology":[8081, 8082, 8080]
+}
