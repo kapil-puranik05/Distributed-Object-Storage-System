@@ -1,65 +1,95 @@
 package node
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"storage/internal/shared"
+	"sync"
 )
 
-type Node struct {
-	Host     string
-	Port     uint64
-	Topology []uint64
-	Role     string
+type LogEntry struct {
+	SequenceNumber uint64              `json:"sequenceNumber"`
+	WriteRequest   shared.WriteRequest `json:"writeRequest"`
 }
 
-type NodeDetails struct {
-	Host     string   `json:"host"`
-	Port     uint64   `json:"port"`
-	Topology []uint64 `json:"topology"`
+type Node struct {
+	configurationMutex sync.RWMutex
+	currentEpoch       int
+	Role               shared.Role
+	prevAddress        string
+	nextAddress        string
+	sequenceCounter    uint64
+	sentListMutex      sync.RWMutex
+	sentList           []LogEntry
+	address            string
 }
 
 func (n *Node) InitializeNode() {
-	basePath := os.Getenv("NODE_PATH")
-	if basePath == "" {
-		basePath = "."
-	}
-	data, err := os.ReadFile(fmt.Sprintf("%s/node.json", basePath))
+	var basePath string = os.Getenv("NODE_PATH")
+	var nodeFile string = fmt.Sprintf("%s/node.json", basePath)
+	var filePath string = fmt.Sprintf("%s/log.txt", basePath)
+	data, err := os.ReadFile(nodeFile)
 	if err != nil {
-		log.Printf("Error occurred while reading the node properties: %v", err)
-		return
+		log.Fatalf("Error occurred while reading node state: %v", err)
 	}
-	var nodeDetails NodeDetails
-	err = json.Unmarshal(data, &nodeDetails)
+	var result map[string]string
+	err = json.Unmarshal(data, &result)
 	if err != nil {
-		log.Printf("Error occurred while parsing the node properties: %v", err)
-		return
+		log.Fatalf("Error occurred while parsing node state: %v", err)
 	}
-	n.Host = nodeDetails.Host
-	n.Port = nodeDetails.Port
-	n.Topology = nodeDetails.Topology
-	size := len(n.Topology)
-	if size == 0 {
-		log.Fatal("Topology is undefined, role cannot be determined")
-	}
-	switch true {
-	case n.Port == n.Topology[0]:
-		n.Role = "HEAD"
-	case n.Port == n.Topology[size-1]:
-		n.Role = "TAIL"
-	default:
-		found := false
-		for _, port := range n.Topology {
-			if n.Port == port {
-				found = true
-				break
-			}
+	n.address = result["address"]
+	n.currentEpoch = 0
+	n.Role = shared.RoleOrphan
+	n.sequenceCounter = 0
+	n.sentList = loadSentList(filePath)
+}
+
+func loadSentList(filePath string) []LogEntry {
+	var sentList []LogEntry
+	file, err := os.Open(filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return sentList
 		}
-		if !found {
-			log.Fatalf("Node port %d not found in topology %v", n.Port, n.Topology)
-		}
-		n.Role = "MIDDLE"
+		log.Fatalf("Error occurred while opening the log: %v", err)
 	}
-	log.Printf("Successfully initialized the node as %s", n.Role)
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var entry LogEntry
+		data := scanner.Bytes()
+		err := json.Unmarshal(data, &entry)
+		if err != nil {
+			log.Fatalf("Error occurred while parsing the log entry: %v", err)
+		}
+		sentList = append(sentList, entry)
+	}
+	if err = scanner.Err(); err != nil {
+		log.Fatalf("Error occurred while parsing the log: %v", err)
+	}
+	return sentList
+}
+
+func appendLogEntry(entry LogEntry, filePath string) error {
+	data, err := json.Marshal(&entry)
+	if err != nil {
+		return fmt.Errorf("Error occurred while appending the log entry: %w", err)
+	}
+	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("Error occurred while opening the file for appending: %w", err)
+	}
+	defer file.Close()
+	_, err = file.Write(append(data, '\n'))
+	if err != nil {
+		return fmt.Errorf("Failed to write the entry to the log: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("Failed to sync log to disk: %w", err)
+	}
+	return nil
 }
