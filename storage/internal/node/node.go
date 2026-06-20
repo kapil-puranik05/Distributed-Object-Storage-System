@@ -9,6 +9,13 @@ import (
 	"os"
 	"storage/internal/shared"
 	"sync"
+	"sync/atomic"
+)
+
+var (
+	basePath string = os.Getenv("NODE_PATH")
+	nodeFile string = fmt.Sprintf("%s/node.json", basePath)
+	filePath string = fmt.Sprintf("%s/log.txt", basePath)
 )
 
 type LogEntry struct {
@@ -28,10 +35,7 @@ type Node struct {
 	address            string
 }
 
-func (n *Node) InitializeNode() {
-	var basePath string = os.Getenv("NODE_PATH")
-	var nodeFile string = fmt.Sprintf("%s/node.json", basePath)
-	var filePath string = fmt.Sprintf("%s/log.txt", basePath)
+func (n *Node) initializeNode() {
 	data, err := os.ReadFile(nodeFile)
 	if err != nil {
 		log.Fatalf("Error occurred while reading node state: %v", err)
@@ -45,10 +49,10 @@ func (n *Node) InitializeNode() {
 	n.currentEpoch = 0
 	n.Role = shared.RoleOrphan
 	n.sequenceCounter = 0
-	n.sentList = loadSentList(filePath)
+	n.sentList = loadSentList()
 }
 
-func loadSentList(filePath string) []LogEntry {
+func loadSentList() []LogEntry {
 	var sentList []LogEntry
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -74,7 +78,10 @@ func loadSentList(filePath string) []LogEntry {
 	return sentList
 }
 
-func appendLogEntry(entry LogEntry, filePath string) error {
+func (n *Node) appendLogEntry(entry *LogEntry) error {
+	n.sentListMutex.Lock()
+	n.sentList = append(n.sentList, *entry)
+	n.sentListMutex.Unlock()
 	data, err := json.Marshal(&entry)
 	if err != nil {
 		return fmt.Errorf("Error occurred while appending the log entry: %w", err)
@@ -90,6 +97,129 @@ func appendLogEntry(entry LogEntry, filePath string) error {
 	}
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("Failed to sync log to disk: %w", err)
+	}
+	return nil
+}
+
+func (n *Node) write(req shared.WriteRequest) (bool, error) {
+	n.configurationMutex.RLock()
+	epoch := n.currentEpoch
+	role := n.Role
+	/*
+		nextAddress := n.nextAddress
+		prevAddress := n.prevAddress
+	*/
+	n.configurationMutex.RUnlock()
+	if req.Epoch < epoch {
+		return false, errors.New("Stale Epoch")
+	}
+	if role == shared.RoleHead {
+		newSequenceNumber := atomic.AddUint64(&n.sequenceCounter, 1)
+		req.SequenceNumber = newSequenceNumber
+	}
+	// TODO:
+	// Postgres Write(Will do it later)
+	if role == shared.RoleHead || role == shared.RoleMiddle {
+		entry := &LogEntry{
+			SequenceNumber: req.SequenceNumber,
+			WriteRequest:   req,
+		}
+		err := n.appendLogEntry(entry)
+		if err != nil {
+			return false, err
+		}
+		// TODO:
+		// Outbound Network call(Will do it later)
+	} else if role == shared.RoleTail {
+		// TODO:
+		// Ack Network call(Also later)
+		return true, nil
+	}
+	return true, nil
+}
+
+func (n *Node) acknowledge(req shared.AckRequest) error {
+	n.configurationMutex.RLock()
+	epoch := n.currentEpoch
+	prevAddress := n.prevAddress
+	n.configurationMutex.RUnlock()
+	if req.Epoch < epoch {
+		return errors.New("Stale Epoch")
+	}
+	n.sentListMutex.Lock()
+	targetIndex := -1
+	for i, entry := range n.sentList {
+		if entry.SequenceNumber == req.SequenceNumber {
+			targetIndex = i
+			break
+		}
+	}
+	if targetIndex != -1 {
+		n.sentList = append(n.sentList[:targetIndex], n.sentList[targetIndex+1:]...)
+	}
+	n.sentListMutex.Unlock()
+	if targetIndex != -1 {
+		if err := n.rewriteDiskLog(); err != nil {
+			return fmt.Errorf("Error occurred while compacting the log")
+		}
+	}
+	if prevAddress != "" {
+		// TODO:
+		// Outbound call to previous node(Will do it later)
+	}
+	return nil
+}
+
+func (n *Node) rewriteDiskLog() error {
+	n.sentListMutex.RLock()
+	defer n.sentListMutex.RUnlock()
+	tempPath := fmt.Sprintf("%s.tmp", filePath)
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	for _, entry := range n.sentList {
+		data, err := json.Marshal(&entry)
+		if err != nil {
+			file.Close()
+			return err
+		}
+		if _, err := file.Write(append(data, '\n')); err != nil {
+			file.Close()
+			return err
+		}
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	file.Close()
+	return os.Rename(tempPath, filePath)
+}
+
+func (n *Node) reconfigure(cmd shared.ReConfigCommand) error {
+	n.configurationMutex.Lock()
+	defer n.configurationMutex.Unlock()
+	if cmd.NewEpoch <= n.currentEpoch {
+		return errors.New("Stale Epoch")
+	}
+	n.currentEpoch = cmd.NewEpoch
+	n.Role = cmd.AssignedRole
+	n.prevAddress = cmd.PrevAddress
+	n.nextAddress = cmd.NextAddress
+	if n.Role == shared.RoleTail {
+		n.sentListMutex.Lock()
+		n.sentList = nil
+		n.sentListMutex.Unlock()
+		return clearDiskLog()
+	}
+	return nil
+}
+
+func clearDiskLog() error {
+	err := os.WriteFile(filePath, []byte{}, 0644)
+	if err != nil {
+		return fmt.Errorf("Failed to clear transit log while transitioning to tail")
 	}
 	return nil
 }
