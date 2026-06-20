@@ -2,10 +2,12 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"storage/internal/shared"
 	"sync"
@@ -105,10 +107,8 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 	n.configurationMutex.RLock()
 	epoch := n.currentEpoch
 	role := n.Role
-	/*
-		nextAddress := n.nextAddress
-		prevAddress := n.prevAddress
-	*/
+	nextAddress := n.nextAddress
+	prevAddress := n.prevAddress
 	n.configurationMutex.RUnlock()
 	if req.Epoch < epoch {
 		return false, errors.New("Stale Epoch")
@@ -128,11 +128,32 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		// TODO:
-		// Outbound Network call(Will do it later)
+		jsonData, err := json.Marshal(req)
+		if err != nil {
+			return false, fmt.Errorf("failed to marshal forward write payload: %w", err)
+		}
+		url := fmt.Sprintf("http://%s/write", nextAddress)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			return false, fmt.Errorf("Failed forwarding write downstream to %s: %w", nextAddress, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("downstream node %s returned status: %d", nextAddress, resp.StatusCode)
+		}
 	} else if role == shared.RoleTail {
-		// TODO:
-		// Ack Network call(Also later)
+		ackReq := shared.AckRequest{
+			Epoch:          epoch,
+			SequenceNumber: req.SequenceNumber,
+		}
+		go func(addr string, payload shared.AckRequest) {
+			if addr == "" {
+				return
+			}
+			jsonData, _ := json.Marshal(payload)
+			url := fmt.Sprintf("http://%s/acknowledge", addr)
+			_, _ = http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		}(prevAddress, ackReq)
 		return true, nil
 	}
 	return true, nil
@@ -164,8 +185,17 @@ func (n *Node) acknowledge(req shared.AckRequest) error {
 		}
 	}
 	if prevAddress != "" {
-		// TODO:
-		// Outbound call to previous node(Will do it later)
+		go func(addr string, payload shared.AckRequest) {
+			jsonData, err := json.Marshal(payload)
+			if err != nil {
+				return
+			}
+			url := fmt.Sprintf("http://%s/acknowledge", addr)
+			resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+			if err == nil {
+				resp.Body.Close()
+			}
+		}(prevAddress, req)
 	}
 	return nil
 }
