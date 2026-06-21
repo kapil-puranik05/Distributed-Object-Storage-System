@@ -1,7 +1,10 @@
 package node
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"storage/internal/shared"
 )
@@ -10,6 +13,10 @@ var (
 	node    = &Node{}
 	Address string
 )
+
+type Heartbeat struct {
+	IsAlive bool
+}
 
 type WriteResponse struct {
 	IsWritten bool
@@ -102,4 +109,22 @@ func AcknowlegementHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func SendHeartbeat() {
+	hb := &Heartbeat{
+		IsAlive: true,
+	}
+	data, err := json.Marshal(&hb)
+	if err != nil {
+		log.Printf("Error occurred while parsing heartbeat: %v", err)
+		return
+	}
+	url := fmt.Sprintf("http://%s/heartbeat", node.masterAddress)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		log.Printf("Error occurred while sending heartbeat: %v", err)
+		return
+	}
+	resp.Body.Close()
 }

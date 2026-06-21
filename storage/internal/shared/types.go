@@ -29,8 +29,9 @@ type AckRequest struct {
 }
 
 type ReConfigCommand struct {
-	NewEpoch     int    `json:"newEpoch"`
-	AssignedRole Role   `json:"assignedRole"`
-	PrevAddress  string `json:"prevAddress"`
-	NextAddress  string `json:"nextAddress"`
+	NewEpoch      int    `json:"newEpoch"`
+	AssignedRole  Role   `json:"assignedRole"`
+	PrevAddress   string `json:"prevAddress"`
+	NextAddress   string `json:"nextAddress"`
+	MasterAddress string `json:"masterAddress"`
 }

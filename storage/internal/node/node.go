@@ -35,6 +35,7 @@ type Node struct {
 	sentListMutex      sync.RWMutex
 	sentList           []LogEntry
 	address            string
+	masterAddress      string
 }
 
 func (n *Node) initializeNode() {
@@ -237,6 +238,7 @@ func (n *Node) reconfigure(cmd shared.ReConfigCommand) error {
 	n.Role = cmd.AssignedRole
 	n.prevAddress = cmd.PrevAddress
 	n.nextAddress = cmd.NextAddress
+	n.masterAddress = cmd.MasterAddress
 	if n.Role == shared.RoleTail {
 		n.sentListMutex.Lock()
 		n.sentList = nil
