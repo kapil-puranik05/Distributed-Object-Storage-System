@@ -14,10 +14,6 @@ var (
 	Address string
 )
 
-type Heartbeat struct {
-	IsAlive bool
-}
-
 type WriteResponse struct {
 	IsWritten bool
 }
@@ -30,6 +26,10 @@ type NodeReconfigurationResponse struct {
 func InitializeNode() {
 	node.initializeNode()
 	Address = node.address
+}
+
+func SendRegistrationRequest() {
+	node.sendRegistrationRequest()
 }
 
 func NodeReconfigurationHandler(w http.ResponseWriter, r *http.Request) {
@@ -112,8 +112,9 @@ func AcknowlegementHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func SendHeartbeat() {
-	hb := &Heartbeat{
-		IsAlive: true,
+	hb := &shared.NodeMetaDataDto{
+		Address: node.address,
+		NodeId:  node.nodeId,
 	}
 	data, err := json.Marshal(&hb)
 	if err != nil {

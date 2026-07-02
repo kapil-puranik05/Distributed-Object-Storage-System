@@ -27,7 +27,7 @@ type LogEntry struct {
 
 type Node struct {
 	configurationMutex sync.RWMutex
-	currentEpoch       int
+	currentEpoch       uint64
 	Role               shared.Role
 	prevAddress        string
 	nextAddress        string
@@ -36,6 +36,7 @@ type Node struct {
 	sentList           []LogEntry
 	address            string
 	masterAddress      string
+	nodeId             string
 }
 
 func (n *Node) initializeNode() {
@@ -48,11 +49,34 @@ func (n *Node) initializeNode() {
 	if err != nil {
 		log.Fatalf("Error occurred while parsing node state: %v", err)
 	}
+	log.Println("Node state read from disk")
 	n.address = result["address"]
+	n.masterAddress = result["masterAddress"]
+	n.nodeId = result["nodeId"]
 	n.currentEpoch = 0
 	n.Role = shared.RoleOrphan
 	n.sequenceCounter = 0
 	n.sentList = loadSentList()
+	log.Println("Node initialized successfully")
+}
+
+func (n *Node) sendRegistrationRequest() {
+	log.Println("Sending registration request to the master")
+	payload := &shared.NodeMetaDataDto{
+		NodeId:  n.nodeId,
+		Address: n.address,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Fatalf("Error occurred while encoding node data for node registration: %v", err)
+	}
+	url := fmt.Sprintf("http://%s/register", n.masterAddress)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Fatalf("Error occurred while sending registration request to master: %v", err)
+	}
+	resp.Body.Close()
+	log.Println("Node registered successfully")
 }
 
 func loadSentList() []LogEntry {
@@ -118,9 +142,12 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		newSequenceNumber := atomic.AddUint64(&n.sequenceCounter, 1)
 		req.SequenceNumber = newSequenceNumber
 	}
+	log.Println("Writing data to disk")
 	// TODO:
 	// Postgres Write(Will do it later)
+	log.Println("Data written to disk successfully")
 	if role == shared.RoleHead || role == shared.RoleMiddle {
+		log.Println("Replicating data to successor node")
 		entry := &LogEntry{
 			SequenceNumber: req.SequenceNumber,
 			WriteRequest:   req,
@@ -143,6 +170,7 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 			return false, fmt.Errorf("downstream node %s returned status: %d", nextAddress, resp.StatusCode)
 		}
 	} else if role == shared.RoleTail {
+		log.Println("Data replicated to tail node")
 		ackReq := shared.AckRequest{
 			Epoch:          epoch,
 			SequenceNumber: req.SequenceNumber,
@@ -185,6 +213,7 @@ func (n *Node) acknowledge(req shared.AckRequest) error {
 			return fmt.Errorf("Error occurred while compacting the log")
 		}
 	}
+	log.Println("Acknowledgement received from successor node")
 	if prevAddress != "" {
 		go func(addr string, payload shared.AckRequest) {
 			jsonData, err := json.Marshal(payload)
@@ -238,13 +267,14 @@ func (n *Node) reconfigure(cmd shared.ReConfigCommand) error {
 	n.Role = cmd.AssignedRole
 	n.prevAddress = cmd.PrevAddress
 	n.nextAddress = cmd.NextAddress
-	n.masterAddress = cmd.MasterAddress
 	if n.Role == shared.RoleTail {
 		n.sentListMutex.Lock()
 		n.sentList = nil
 		n.sentListMutex.Unlock()
+		log.Printf("Node reconfigured successfully to Role: %s", shared.RoleTail)
 		return clearDiskLog()
 	}
+	log.Printf("Node reconfigured successfully to Role: %s", n.Role)
 	return nil
 }
 

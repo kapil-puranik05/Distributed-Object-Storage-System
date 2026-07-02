@@ -1,3 +1,5 @@
 {
-    "address":"localhost:9002"
+    "address":"localhost:8081",
+    "masterAddress":"localhost:9000",
+    "nodeId":"node2"
 }

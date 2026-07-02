@@ -15,23 +15,25 @@ type ObjectData struct {
 }
 
 type WriteRequest struct {
-	Epoch          int    `json:"epoch"`
+	Epoch          uint64 `json:"epoch"`
 	SequenceNumber uint64 `json:"sequenceNumber"`
-	RequestID      string `json:"requestId"`
 	ObjectID       string `json:"objectId"`
 	Data           []byte `json:"data"`
-	OpType         string `json:"opType"`
 }
 
 type AckRequest struct {
-	Epoch          int    `json:"epoch"`
+	Epoch          uint64 `json:"epoch"`
 	SequenceNumber uint64 `json:"sequenceNumber"`
 }
 
 type ReConfigCommand struct {
-	NewEpoch      int    `json:"newEpoch"`
-	AssignedRole  Role   `json:"assignedRole"`
-	PrevAddress   string `json:"prevAddress"`
-	NextAddress   string `json:"nextAddress"`
-	MasterAddress string `json:"masterAddress"`
+	NewEpoch     uint64 `json:"newEpoch"`
+	AssignedRole Role   `json:"assignedRole"`
+	PrevAddress  string `json:"prevAddress"`
+	NextAddress  string `json:"nextAddress"`
+}
+
+type NodeMetaDataDto struct {
+	NodeId  string `json:"nodeId"`
+	Address string `json:"address"`
 }
