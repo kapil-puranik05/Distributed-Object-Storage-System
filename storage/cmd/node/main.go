@@ -33,6 +33,7 @@ func main() {
 	defer cancel()
 	node.InitializeNode()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthCheck", node.HealthCheckHandler)
 	mux.HandleFunc("/configure", node.NodeReconfigurationHandler)
 	mux.HandleFunc("/write", node.WriteHandler)
 	mux.HandleFunc("/acknowledge", node.AcknowlegementHandler)

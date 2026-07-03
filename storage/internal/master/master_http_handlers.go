@@ -10,6 +10,11 @@ var (
 	globalClusterLayout = &ClusterLayout{}
 )
 
+type LayoutDto struct {
+	HeadAddress string `json:"headAddress"`
+	TailAddress string `json:"tailAddress"`
+}
+
 func (m *MasterNodeRegistry) HandleRegisterNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -31,8 +36,12 @@ func (m *MasterNodeRegistry) HandleGetLayout(w http.ResponseWriter, r *http.Requ
 	}
 	globalClusterLayout.LayoutMutex.RLock()
 	defer globalClusterLayout.LayoutMutex.RUnlock()
+	payload := &LayoutDto{
+		HeadAddress: globalClusterLayout.HeadAddress,
+		TailAddress: globalClusterLayout.TailAddress,
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(globalClusterLayout)
+	json.NewEncoder(w).Encode(payload)
 }
 
 func (m *MasterNodeRegistry) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {

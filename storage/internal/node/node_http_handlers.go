@@ -32,6 +32,14 @@ func SendRegistrationRequest() {
 	node.sendRegistrationRequest()
 }
 
+func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Error: Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Write([]byte("Server is running"))
+}
+
 func NodeReconfigurationHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Error: Method not allowed", http.StatusMethodNotAllowed)
@@ -68,6 +76,7 @@ func WriteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var req shared.WriteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Decode error: %v", err)
 		http.Error(w, "Error: Unable to parse the request", http.StatusBadRequest)
 		return
 	}
