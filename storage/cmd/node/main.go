@@ -47,6 +47,7 @@ func main() {
 			log.Fatalf("Local server listen failed: %v", err)
 		}
 	}()
+	time.Sleep(5 * time.Second)
 	node.SendRegistrationRequest()
 	StartHeartbeatLoop(ctx, 10*time.Second)
 	stopChan := make(chan os.Signal, 1)
