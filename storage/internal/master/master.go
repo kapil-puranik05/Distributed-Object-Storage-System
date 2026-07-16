@@ -32,6 +32,7 @@ type ClusterLayout struct {
 
 type MasterDetails struct {
 	Address string `json:"address"`
+	ChainId string `json:"chainId"`
 }
 
 type NodeMetaData struct {
