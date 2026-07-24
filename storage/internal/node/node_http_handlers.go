@@ -15,7 +15,7 @@ var (
 )
 
 type WriteResponse struct {
-	IsWritten bool
+	IsWritten bool `json:"isWritten"`
 }
 
 type NodeReconfigurationResponse struct {

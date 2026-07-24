@@ -26,13 +26,15 @@ type NodeTask struct {
 
 type ClusterLayout struct {
 	LayoutMutex sync.RWMutex
+	Epoch       uint64 `json:"epoch"`
 	HeadAddress string `json:"headAddress"`
 	TailAddress string `json:"tailAddress"`
 }
 
 type MasterDetails struct {
-	Address string `json:"address"`
-	ChainId string `json:"chainId"`
+	Address       string `json:"address"`
+	ChainId       string `json:"chainId"`
+	RouterAddress string `json:"routerAddress"`
 }
 
 type NodeMetaData struct {
@@ -47,6 +49,15 @@ type MasterNodeRegistry struct {
 	chainLayout        []*NodeMetaData
 	nodeRegistry       map[string]*NodeMetaData
 	Address            string
+	RouterAddress      string
+	ChainId            string
+}
+
+type ChainRegistrationRequest struct {
+	ChainId       string `json:"chainId"`
+	HeadAddress   string `json:"headAddress"`
+	TailAddress   string `json:"tailAddress"`
+	MasterAddress string `json:"masterAddress"`
 }
 
 func (m *MasterNodeRegistry) InitializeMaster() {
@@ -63,6 +74,8 @@ func (m *MasterNodeRegistry) InitializeMaster() {
 	m.chainLayout = make([]*NodeMetaData, 0)
 	m.nodeRegistry = make(map[string]*NodeMetaData)
 	m.Address = masterDetails.Address
+	m.RouterAddress = masterDetails.RouterAddress
+	m.ChainId = masterDetails.ChainId
 	log.Println("Master initialized successfully")
 }
 
@@ -96,13 +109,46 @@ func (m *MasterNodeRegistry) registerNode(nodeDto *shared.NodeMetaDataDto) {
 			m.chainLayout = append(m.chainLayout, node)
 			log.Println("Cluster threshold met, activating epoch")
 			m.applyReconfigurationSequence()
+			globalClusterLayout.LayoutMutex.Lock()
+			request := &ChainRegistrationRequest{
+				ChainId:       m.ChainId,
+				HeadAddress:   globalClusterLayout.HeadAddress,
+				TailAddress:   globalClusterLayout.TailAddress,
+				MasterAddress: m.Address,
+			}
+			globalClusterLayout.LayoutMutex.Unlock()
+			m.sendChainRegistrationRequest(*request)
 		} else {
 			log.Println("New Node registered successfully")
 			m.applyReconfigurationSequence()
+			globalClusterLayout.LayoutMutex.Lock()
+			request := &ChainRegistrationRequest{
+				ChainId:       m.ChainId,
+				HeadAddress:   globalClusterLayout.HeadAddress,
+				TailAddress:   globalClusterLayout.TailAddress,
+				MasterAddress: m.Address,
+			}
+			globalClusterLayout.LayoutMutex.Unlock()
+			m.sendChainRegistrationRequest(*request)
 		}
 	} else {
 		log.Printf("Active Node %s re-registered / recovered smoothly.\n", node.NodeId)
 	}
+}
+
+func (m *MasterNodeRegistry) sendChainRegistrationRequest(req ChainRegistrationRequest) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		log.Printf("Failed to marshal chain registration request: %v", err)
+		return
+	}
+	url := fmt.Sprintf("http://%s/register", m.RouterAddress)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	if err != nil {
+		log.Printf("Failed to send chain registration request: %v", err)
+		return
+	}
+	resp.Body.Close()
 }
 
 func (m *MasterNodeRegistry) StartHealthCheckLoop(ctx context.Context, interval time.Duration) {
@@ -186,6 +232,7 @@ func (m *MasterNodeRegistry) applyReconfigurationSequence() {
 		}
 	}
 	globalClusterLayout.LayoutMutex.Lock()
+	globalClusterLayout.Epoch = m.currentEpoch
 	globalClusterLayout.HeadAddress = m.chainLayout[0].Address
 	globalClusterLayout.TailAddress = m.chainLayout[chainLength-1].Address
 	globalClusterLayout.LayoutMutex.Unlock()

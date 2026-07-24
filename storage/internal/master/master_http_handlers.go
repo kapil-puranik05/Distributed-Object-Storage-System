@@ -10,7 +10,12 @@ var (
 	globalClusterLayout = &ClusterLayout{}
 )
 
+type Config struct {
+	Epoch uint64 `json:"epoch"`
+}
+
 type LayoutDto struct {
+	Epoch       uint64 `json:"epoch"`
 	HeadAddress string `json:"headAddress"`
 	TailAddress string `json:"tailAddress"`
 }
@@ -39,6 +44,7 @@ func (m *MasterNodeRegistry) HandleGetLayout(w http.ResponseWriter, r *http.Requ
 	payload := &LayoutDto{
 		HeadAddress: globalClusterLayout.HeadAddress,
 		TailAddress: globalClusterLayout.TailAddress,
+		Epoch:       globalClusterLayout.Epoch,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(payload)

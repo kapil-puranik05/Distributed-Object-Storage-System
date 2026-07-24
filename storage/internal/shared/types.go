@@ -19,6 +19,7 @@ type WriteRequest struct {
 	SequenceNumber uint64 `json:"sequenceNumber"`
 	ObjectID       string `json:"objectId"`
 	Data           []byte `json:"data"`
+	ChunkId        uint64 `json:"chunkId"`
 }
 
 type AckRequest struct {

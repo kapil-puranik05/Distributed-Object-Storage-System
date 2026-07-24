@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"storage/internal/shared"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -135,6 +137,7 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 	nextAddress := n.nextAddress
 	prevAddress := n.prevAddress
 	n.configurationMutex.RUnlock()
+	log.Printf("Received epoch=%d Current epoch=%d", req.Epoch, n.currentEpoch)
 	if req.Epoch < epoch {
 		return false, errors.New("Stale Epoch")
 	}
@@ -143,8 +146,16 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		req.SequenceNumber = newSequenceNumber
 	}
 	log.Println("Writing data to disk")
-	// TODO:
-	// Postgres Write(Will do it later)
+	if err := os.MkdirAll(filepath.Join(n.nodeId, req.ObjectID), 0755); err != nil {
+		log.Printf("Error occurred while creating object group: %v", err)
+		return false, err
+	}
+	file := strconv.FormatUint(req.ChunkId, 10)
+	path := filepath.Join(n.nodeId, req.ObjectID, file)
+	if err := os.WriteFile(path, req.Data, 0644); err != nil {
+		log.Printf("Error occurred while writing chunk %d to the disk: %v", req.ChunkId, err)
+		return false, err
+	}
 	log.Println("Data written to disk successfully")
 	if role == shared.RoleHead || role == shared.RoleMiddle {
 		log.Println("Replicating data to successor node")
@@ -163,11 +174,13 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		url := fmt.Sprintf("http://%s/write", nextAddress)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
+			_ = os.Remove(path)
 			return false, fmt.Errorf("Failed forwarding write downstream to %s: %w", nextAddress, err)
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return false, fmt.Errorf("downstream node %s returned status: %d", nextAddress, resp.StatusCode)
+			_ = os.Remove(path)
+			return false, fmt.Errorf("Downstream node %s returned status: %d", nextAddress, resp.StatusCode)
 		}
 	} else if role == shared.RoleTail {
 		log.Println("Data replicated to tail node")

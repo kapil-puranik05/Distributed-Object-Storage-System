@@ -1,4 +1,5 @@
 {
     "address":"localhost:9000",
-    "chainId":"chain1"
+    "chainId":"chain1",
+    "routerAddress":"localhost:8000"
 }
