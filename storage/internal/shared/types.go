@@ -29,10 +29,11 @@ type AckRequest struct {
 }
 
 type ReConfigCommand struct {
-	NewEpoch     uint64 `json:"newEpoch"`
-	AssignedRole Role   `json:"assignedRole"`
-	PrevAddress  string `json:"prevAddress"`
-	NextAddress  string `json:"nextAddress"`
+	NewEpoch        uint64 `json:"newEpoch"`
+	AssignedRole    Role   `json:"assignedRole"`
+	PrevAddress     string `json:"prevAddress"`
+	NextAddress     string `json:"nextAddress"`
+	SyncFromAddress string `json:"syncFromAddress"`
 }
 
 type NodeMetaDataDto struct {
@@ -43,4 +44,10 @@ type NodeMetaDataDto struct {
 type Chunk struct {
 	ID   uint64 `json:"id"`
 	Data []byte `json:"data"`
+}
+
+type SnapshotChunk struct {
+	ObjectID string `json:"objectId"`
+	ChunkID  uint64 `json:"chunkId"`
+	Data     []byte `json:"data"`
 }

@@ -108,32 +108,29 @@ func (m *MasterNodeRegistry) registerNode(nodeDto *shared.NodeMetaDataDto) {
 		} else if chainLen == 2 {
 			m.chainLayout = append(m.chainLayout, node)
 			log.Println("Cluster threshold met, activating epoch")
-			m.applyReconfigurationSequence()
-			globalClusterLayout.LayoutMutex.Lock()
-			request := &ChainRegistrationRequest{
-				ChainId:       m.ChainId,
-				HeadAddress:   globalClusterLayout.HeadAddress,
-				TailAddress:   globalClusterLayout.TailAddress,
-				MasterAddress: m.Address,
+			if m.applyReconfigurationSequence(node.NodeId) {
+				m.sendCurrentChainRegistration()
 			}
-			globalClusterLayout.LayoutMutex.Unlock()
-			m.sendChainRegistrationRequest(*request)
 		} else {
+			m.chainLayout = append(m.chainLayout, node)
 			log.Println("New Node registered successfully")
-			m.applyReconfigurationSequence()
-			globalClusterLayout.LayoutMutex.Lock()
-			request := &ChainRegistrationRequest{
-				ChainId:       m.ChainId,
-				HeadAddress:   globalClusterLayout.HeadAddress,
-				TailAddress:   globalClusterLayout.TailAddress,
-				MasterAddress: m.Address,
+			if m.applyReconfigurationSequence(node.NodeId) {
+				m.sendCurrentChainRegistration()
 			}
-			globalClusterLayout.LayoutMutex.Unlock()
-			m.sendChainRegistrationRequest(*request)
 		}
 	} else {
 		log.Printf("Active Node %s re-registered / recovered smoothly.\n", node.NodeId)
 	}
+}
+
+func (m *MasterNodeRegistry) sendCurrentChainRegistration() {
+	globalClusterLayout.LayoutMutex.RLock()
+	request := ChainRegistrationRequest{
+		ChainId: m.ChainId, HeadAddress: globalClusterLayout.HeadAddress,
+		TailAddress: globalClusterLayout.TailAddress, MasterAddress: m.Address,
+	}
+	globalClusterLayout.LayoutMutex.RUnlock()
+	m.sendChainRegistrationRequest(request)
 }
 
 func (m *MasterNodeRegistry) sendChainRegistrationRequest(req ChainRegistrationRequest) {
@@ -143,7 +140,7 @@ func (m *MasterNodeRegistry) sendChainRegistrationRequest(req ChainRegistrationR
 		return
 	}
 	url := fmt.Sprintf("http://%s/register", m.RouterAddress)
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
 		log.Printf("Failed to send chain registration request: %v", err)
 		return
@@ -172,7 +169,7 @@ func (m *MasterNodeRegistry) StartHealthCheckLoop(ctx context.Context, interval 
 func (m *MasterNodeRegistry) healthCheck() {
 	m.configurationMutex.Lock()
 	defer m.configurationMutex.Unlock()
-	if len(m.chainLayout) < 3 {
+	if len(m.chainLayout) == 0 {
 		return
 	}
 	failureDetected := false
@@ -185,17 +182,19 @@ func (m *MasterNodeRegistry) healthCheck() {
 		}
 	}
 	if failureDetected {
-		m.applyReconfigurationSequence()
+		if m.applyReconfigurationSequence("") {
+			m.sendCurrentChainRegistration()
+		}
 	}
 }
 
-func (m *MasterNodeRegistry) applyReconfigurationSequence() {
-	m.currentEpoch++
+func (m *MasterNodeRegistry) applyReconfigurationSequence(syncNodeID string) bool {
+	nextEpoch := m.currentEpoch + 1
 	chainLength := len(m.chainLayout)
-	epoch := m.currentEpoch
+	epoch := nextEpoch
 	var tasks []NodeTask
 	if chainLength == 0 {
-		log.Fatal("Error, no nodes alive")
+		return false
 	} else if chainLength == 1 {
 		targetNode := m.chainLayout[0]
 		task := NodeTask{
@@ -220,6 +219,9 @@ func (m *MasterNodeRegistry) applyReconfigurationSequence() {
 				cmd.AssignedRole = shared.RoleTail
 				cmd.PrevAddress = m.chainLayout[i-1].Address
 				cmd.NextAddress = ""
+				if m.chainLayout[i].NodeId == syncNodeID {
+					cmd.SyncFromAddress = m.chainLayout[i-1].Address
+				}
 			} else {
 				cmd.AssignedRole = shared.RoleMiddle
 				cmd.PrevAddress = m.chainLayout[i-1].Address
@@ -231,28 +233,33 @@ func (m *MasterNodeRegistry) applyReconfigurationSequence() {
 			})
 		}
 	}
+	log.Println("Applying reconfiguration sequence to the active nodes")
+	// Configure tail-to-head so a replay from an upstream node always has a ready successor.
+	for i := len(tasks) - 1; i >= 0; i-- {
+		task := tasks[i]
+		data, err := json.Marshal(task.Payload)
+		if err != nil {
+			return false
+		}
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Post(fmt.Sprintf("http://%s/configure", task.TargetAddress), "application/json", bytes.NewBuffer(data))
+		if err != nil {
+			log.Printf("Failed to configure node at %s: %v", task.TargetAddress, err)
+			return false
+		}
+		status := resp.StatusCode
+		resp.Body.Close()
+		if status != http.StatusOK {
+			log.Printf("Node at %s rejected configuration with status %d", task.TargetAddress, status)
+			return false
+		}
+	}
+	m.currentEpoch = nextEpoch
 	globalClusterLayout.LayoutMutex.Lock()
-	globalClusterLayout.Epoch = m.currentEpoch
+	globalClusterLayout.Epoch = epoch
 	globalClusterLayout.HeadAddress = m.chainLayout[0].Address
 	globalClusterLayout.TailAddress = m.chainLayout[chainLength-1].Address
 	globalClusterLayout.LayoutMutex.Unlock()
-	log.Println("Applying reconfiguration sequence to the active nodes")
-	for _, task := range tasks {
-		go func(t NodeTask) {
-			data, err := json.Marshal(t.Payload)
-			if err != nil {
-				return
-			}
-			url := fmt.Sprintf("http://%s/configure", t.TargetAddress)
-			client := &http.Client{Timeout: 2 * time.Second}
-			resp, err := client.Post(url, "application/json", bytes.NewBuffer(data))
-			if err != nil {
-				log.Printf("Failed to configure node at %s: %v\n", t.TargetAddress, err)
-				return
-			}
-			defer resp.Body.Close()
-		}(task)
-	}
+	return true
 }
 
 func (m *MasterNodeRegistry) updateLastSeen(nodeData shared.NodeMetaDataDto) error {

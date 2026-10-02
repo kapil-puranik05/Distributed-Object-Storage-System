@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"storage/internal/shared"
+	"strconv"
 )
 
 var (
@@ -34,7 +36,9 @@ func InitializeNode() {
 }
 
 func SendRegistrationRequest() {
-	node.sendRegistrationRequest()
+	if err := node.sendRegistrationRequest(); err != nil {
+		log.Printf("Node registration failed: %v", err)
+	}
 }
 
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +67,10 @@ func NodeReconfigurationHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "The node could not apply the reconfiguration request")
 		return
 	}
+	if err := node.replayPendingWrites(); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "The node could not replay pending writes")
+		return
+	}
 	response := &NodeReconfigurationResponse{
 		Message:    "Node reconfigured successfully",
 		StatusCode: http.StatusOK,
@@ -72,6 +80,59 @@ func NodeReconfigurationHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "The node could not confirm the reconfiguration")
 		return
 	}
+}
+
+func SnapshotHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "This endpoint only accepts GET requests")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	encoder := json.NewEncoder(w)
+	objects, err := os.ReadDir(node.nodeId)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "The node could not list its data")
+		return
+	}
+	for _, object := range objects {
+		if !object.IsDir() {
+			continue
+		}
+		chunks, err := os.ReadDir(filepath.Join(node.nodeId, object.Name()))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "The node could not read its data")
+			return
+		}
+		for _, chunk := range chunks {
+			id, err := strconv.ParseUint(chunk.Name(), 10, 64)
+			if err != nil {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(node.nodeId, object.Name(), chunk.Name()))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "The node could not read a chunk")
+				return
+			}
+			if err := encoder.Encode(shared.SnapshotChunk{ObjectID: object.Name(), ChunkID: id, Data: data}); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func ExistsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "This endpoint only accepts POST requests")
+		return
+	}
+	var req ReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "The object request payload is invalid")
+		return
+	}
+	_, err := os.Stat(filepath.Join(node.nodeId, req.ObjectId))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"exists": err == nil})
 }
 
 func WriteHandler(w http.ResponseWriter, r *http.Request) {
@@ -165,5 +226,9 @@ func SendHeartbeat() {
 		log.Printf("Error occurred while sending heartbeat: %v", err)
 		return
 	}
+	status := resp.StatusCode
 	resp.Body.Close()
+	if status == http.StatusNotFound {
+		SendRegistrationRequest()
+	}
 }

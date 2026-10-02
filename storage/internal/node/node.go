@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -58,12 +59,16 @@ func (n *Node) initializeNode() {
 	n.nodeId = result["nodeId"]
 	n.currentEpoch = 0
 	n.Role = shared.RoleOrphan
-	n.sequenceCounter = 0
 	n.sentList = loadSentList()
+	for _, entry := range n.sentList {
+		if entry.SequenceNumber > n.sequenceCounter {
+			n.sequenceCounter = entry.SequenceNumber
+		}
+	}
 	log.Println("Node initialized successfully")
 }
 
-func (n *Node) sendRegistrationRequest() {
+func (n *Node) sendRegistrationRequest() error {
 	log.Println("Sending registration request to the master")
 	payload := &shared.NodeMetaDataDto{
 		NodeId:  n.nodeId,
@@ -71,15 +76,19 @@ func (n *Node) sendRegistrationRequest() {
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		log.Fatalf("Error occurred while encoding node data for node registration: %v", err)
+		return fmt.Errorf("encode registration: %w", err)
 	}
 	url := fmt.Sprintf("http://%s/register", n.masterAddress)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Fatalf("Error occurred while sending registration request to master: %v", err)
+		return fmt.Errorf("send registration: %w", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("master rejected registration with status %d", resp.StatusCode)
+	}
 	log.Println("Node registered successfully")
+	return nil
 }
 
 func loadSentList() []LogEntry {
@@ -139,8 +148,11 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 	prevAddress := n.prevAddress
 	n.configurationMutex.RUnlock()
 	log.Printf("Received epoch=%d Current epoch=%d", req.Epoch, epoch)
-	if req.Epoch < epoch {
-		return false, errors.New("stale epoch")
+	if req.Epoch != epoch {
+		return false, errors.New("Stale Epoch")
+	}
+	if role == shared.RoleOrphan {
+		return false, errors.New("node is not part of an active chain")
 	}
 	if role == shared.RoleHead {
 		req.SequenceNumber = atomic.AddUint64(&n.sequenceCounter, 1)
@@ -161,9 +173,9 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		dir := filepath.Join(n.nodeId, req.ObjectID)
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			log.Printf("Object %s already deleted", req.ObjectID)
-			return true, nil
-		}
-		if err := os.RemoveAll(dir); err != nil {
+		} else if err != nil {
+			return false, err
+		} else if err := os.RemoveAll(dir); err != nil {
 			return false, err
 		}
 	default:
@@ -195,7 +207,7 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 	}
 	log.Println("Reached tail. Sending ACK upstream")
 	ackReq := shared.AckRequest{
-		Epoch:          epoch,
+		Epoch:          req.Epoch,
 		SequenceNumber: req.SequenceNumber,
 	}
 	go func(addr string, payload shared.AckRequest) {
@@ -204,7 +216,10 @@ func (n *Node) write(req shared.WriteRequest) (bool, error) {
 		}
 		body, _ := json.Marshal(payload)
 		url := fmt.Sprintf("http://%s/acknowledge", addr)
-		_, _ = http.Post(url, "application/json", bytes.NewBuffer(body))
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+		if err == nil {
+			resp.Body.Close()
+		}
 	}(prevAddress, ackReq)
 	return true, nil
 }
@@ -251,7 +266,7 @@ func (n *Node) acknowledge(req shared.AckRequest) error {
 	epoch := n.currentEpoch
 	prevAddress := n.prevAddress
 	n.configurationMutex.RUnlock()
-	if req.Epoch < epoch {
+	if req.Epoch != epoch {
 		return errors.New("Stale Epoch")
 	}
 	n.sentListMutex.Lock()
@@ -316,6 +331,11 @@ func (n *Node) rewriteDiskLog() error {
 }
 
 func (n *Node) reconfigure(cmd shared.ReConfigCommand) error {
+	if cmd.SyncFromAddress != "" {
+		if err := n.syncFrom(cmd.SyncFromAddress); err != nil {
+			return err
+		}
+	}
 	n.configurationMutex.Lock()
 	defer n.configurationMutex.Unlock()
 	if cmd.NewEpoch <= n.currentEpoch {
@@ -333,6 +353,61 @@ func (n *Node) reconfigure(cmd shared.ReConfigCommand) error {
 		return clearDiskLog()
 	}
 	log.Printf("Node reconfigured successfully to Role: %s", n.Role)
+	return nil
+}
+
+func (n *Node) syncFrom(sourceAddress string) error {
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Get(fmt.Sprintf("http://%s/snapshot", sourceAddress))
+	if err != nil {
+		return fmt.Errorf("fetch snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("snapshot source returned status %d", resp.StatusCode)
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var chunk shared.SnapshotChunk
+		if err := decoder.Decode(&chunk); err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("decode snapshot: %w", err)
+		}
+		dir := filepath.Join(n.nodeId, chunk.ObjectID)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, strconv.FormatUint(chunk.ChunkID, 10)), chunk.Data, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (n *Node) replayPendingWrites() error {
+	n.configurationMutex.RLock()
+	role, nextAddress := n.Role, n.nextAddress
+	n.configurationMutex.RUnlock()
+	if role != shared.RoleHead && role != shared.RoleMiddle {
+		return nil
+	}
+	n.sentListMutex.RLock()
+	pending := append([]LogEntry(nil), n.sentList...)
+	n.sentListMutex.RUnlock()
+	for _, entry := range pending {
+		body, err := json.Marshal(entry.WriteRequest)
+		if err != nil {
+			return err
+		}
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Post(fmt.Sprintf("http://%s/write", nextAddress), "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("replay returned status %d", resp.StatusCode)
+		}
+	}
 	return nil
 }
 

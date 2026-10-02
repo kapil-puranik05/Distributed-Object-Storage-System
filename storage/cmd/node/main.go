@@ -38,6 +38,8 @@ func main() {
 	mux.HandleFunc("/write", node.WriteHandler)
 	mux.HandleFunc("/acknowledge", node.AcknowlegementHandler)
 	mux.HandleFunc("/read", node.ReadHandler)
+	mux.HandleFunc("/snapshot", node.SnapshotHandler)
+	mux.HandleFunc("/exists", node.ExistsHandler)
 	server := &http.Server{
 		Addr:    node.Address,
 		Handler: mux,

@@ -37,6 +37,9 @@ func (r *Registry) RegisterChain(req ChainRegistrationRequest) {
 	defer r.registryMutex.Unlock()
 	for _, chain := range r.chainRegistry {
 		if chain.ChainId == req.ChainId {
+			chain.HeadAddress = req.HeadAddress
+			chain.TailAddress = req.TailAddress
+			chain.MasterAddress = req.MasterAddress
 			return
 		}
 	}
